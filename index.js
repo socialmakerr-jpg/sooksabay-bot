@@ -37,7 +37,7 @@ app.post("/reply", async (req, res) => {
 
   const userId = String(req.body.user_id || "anon");
   const text = String(req.body.text || "").trim();
-  if (!text) return res.json({ reply: "สวัสดีค่ะ 🙏 มีอะไรให้ช่วยไหมคะ" });
+  if (!text) return res.json(mcReply("สวัสดีค่ะ 🙏 มีอะไรให้ช่วยไหมคะ"));
 
   const history = conversations.get(userId) || [];
   history.push({ role: "user", content: text });
@@ -63,8 +63,13 @@ app.post("/reply", async (req, res) => {
   history.push({ role: "assistant", content: reply });
   conversations.set(userId, history.slice(-HISTORY_LIMIT));
 
-  res.json({ reply });
+  res.json(mcReply(reply));
 });
+
+// รูปแบบที่ ManyChat "Dynamic block" เข้าใจ (ส่งข้อความให้ลูกค้าตรง ๆ ไม่ต้อง response mapping)
+function mcReply(text) {
+  return { version: "v2", content: { messages: [{ type: "text", text }] } };
+}
 
 app.listen(PORT, () =>
   console.log("🧠 Claude brain (hybrid) ทำงานที่ port", PORT, "| model:", ANTHROPIC_MODEL)
