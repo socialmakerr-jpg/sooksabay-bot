@@ -1,0 +1,21 @@
+# การตั้งค่า deploy บน Render (https://render.com)
+# วิธี: สร้าง repo (GitHub) -> Render -> New Web Service -> เลือก repo นี้
+# แล้วใส่ Environment Variables ตาม .env.example (Render จะไม่อ่าน .env เอง)
+services:
+  - type: web
+    name: sooksabay-bot
+    runtime: node
+    plan: starter          # ~$7/เดือน รันตลอด 24 ชม. (free จะหลับ ไม่เหมาะกับ webhook)
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: VERIFY_TOKEN
+        sync: false
+      - key: PAGE_TOKEN
+        sync: false
+      - key: PAGE_ID
+        value: "107690554516588"
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: ANTHROPIC_MODEL
+        value: claude-opus-5
