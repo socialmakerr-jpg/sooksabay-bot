@@ -30,8 +30,10 @@ app.get("/", (_req, res) => res.send("Claude brain พร้อมทำงา�
 // body ที่ ManyChat ส่งมา: { "user_id": "<subscriber id>", "text": "<ข้อความลูกค้า>" }
 // ตอบกลับ: { "reply": "<คำตอบ>" }
 app.post("/reply", async (req, res) => {
+  console.log("📩 /reply hit | body:", JSON.stringify(req.body).slice(0, 200), "| x-secret ok:", req.headers["x-secret"] === SHARED_SECRET);
   // กันคนอื่นเรียก
   if (SHARED_SECRET && req.headers["x-secret"] !== SHARED_SECRET) {
+    console.log("⚠️ secret ไม่ตรง — ปฏิเสธ");
     return res.status(401).json({ reply: "unauthorized" });
   }
 
