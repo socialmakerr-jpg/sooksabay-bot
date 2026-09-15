@@ -1,21 +1,17 @@
-# การตั้งค่า deploy บน Render (https://render.com)
-# วิธี: สร้าง repo (GitHub) -> Render -> New Web Service -> เลือก repo นี้
-# แล้วใส่ Environment Variables ตาม .env.example (Render จะไม่อ่าน .env เอง)
+# Render Blueprint — deploy สมอง Claude (hybrid) สำหรับ ManyChat
+# วิธีง่ายสุด: กดลิงก์ Deploy to Render -> วาง ANTHROPIC_API_KEY -> Apply
 services:
   - type: web
     name: sooksabay-bot
     runtime: node
-    plan: starter          # ~$7/เดือน รันตลอด 24 ชม. (free จะหลับ ไม่เหมาะกับ webhook)
+    plan: starter          # ~$7/เดือน รัน 24 ชม. (Free จะหลับ)
+    region: singapore      # ใกล้ไทยสุด
     buildCommand: npm install
     startCommand: npm start
     envVars:
-      - key: VERIFY_TOKEN
-        sync: false
-      - key: PAGE_TOKEN
-        sync: false
-      - key: PAGE_ID
-        value: "107690554516588"
       - key: ANTHROPIC_API_KEY
-        sync: false
+        sync: false         # <- Render จะถามให้วางตอน deploy (ปลอดภัย ไม่อยู่ในโค้ด)
       - key: ANTHROPIC_MODEL
         value: claude-opus-5
+      - key: SHARED_SECRET
+        value: sooksabay-2ae637efe8321a88003d0f2f
