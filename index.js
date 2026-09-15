@@ -65,12 +65,29 @@ app.post("/reply", async (req, res) => {
   history.push({ role: "assistant", content: reply });
   conversations.set(userId, history.slice(-HISTORY_LIMIT));
 
-  res.json(mcReply(reply));
+  // ถ้าลูกค้าพิมพ์เบอร์มา -> ติดแท็ก "ได้เบอร์แล้ว" ให้ ManyChat หยุดตาม (follow-up)
+  const phone = extractPhone(text);
+  const actions = phone
+    ? [{ action: "add_tag", tag_name: "ได้เบอร์แล้ว" }]
+    : null;
+  if (phone) console.log("📞 เจอเบอร์:", phone, "| ติดแท็ก ได้เบอร์แล้ว");
+
+  res.json(mcReply(reply, actions));
 });
 
+// ดึงเบอร์โทรไทยจากข้อความ (มือถือ 10 หลัก / บ้าน 9 หลัก, มี - หรือเว้นวรรคได้)
+function extractPhone(text) {
+  const cleaned = String(text).replace(/[\s\-().]/g, "");
+  const m = cleaned.match(/0\d{8,9}(?!\d)/);
+  return m ? m[0] : null;
+}
+
 // รูปแบบที่ ManyChat "Dynamic block" เข้าใจ (ส่งข้อความให้ลูกค้าตรง ๆ ไม่ต้อง response mapping)
-function mcReply(text) {
-  return { version: "v2", content: { messages: [{ type: "text", text }] } };
+// actions = สั่งงาน ManyChat เพิ่ม เช่น ติดแท็ก (ถ้าไม่ส่งก็ไม่ใส่ = ปลอดภัยกับข้อความปกติ)
+function mcReply(text, actions) {
+  const content = { messages: [{ type: "text", text }] };
+  if (actions && actions.length) content.actions = actions;
+  return { version: "v2", content };
 }
 
 app.listen(PORT, () =>
