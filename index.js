@@ -96,7 +96,7 @@ app.post("/reply", async (req, res) => {
 
 // สร้างรายการข้อความสำหรับ ManyChat — แทนโค้ด [[PORTFOLIO:หมวด]] ด้วยรูปผลงานจริง
 function buildMessages(reply) {
-  const imageMsgs = [];
+  const mediaMsgs = [];
   const sent = new Set();
   const text = String(reply)
     .replace(/\[\[PORTFOLIO:([a-zA-Z0-9_-]+)\]\]/g, (_m, cat) => {
@@ -104,9 +104,14 @@ function buildMessages(reply) {
       if (c && Array.isArray(c.items) && c.items.length && !sent.has(cat)) {
         sent.add(cat);
         for (const it of c.items) {
-          const url = /^https?:\/\//.test(it.url) ? it.url : PUBLIC_BASE_URL + it.url;
-          imageMsgs.push({ type: "image", url });
-          if (it.caption) imageMsgs.push({ type: "text", text: it.caption });
+          if (it.caption) mediaMsgs.push({ type: "text", text: it.caption });
+          // รูปภาพ (ไฟล์ในคลัง หรือลิงก์เต็ม)
+          if (it.url) {
+            const url = /^https?:\/\//.test(it.url) ? it.url : PUBLIC_BASE_URL + it.url;
+            mediaMsgs.push({ type: "image", url });
+          }
+          // วิดีโอ = ส่งลิงก์ (YouTube/Facebook) Messenger จะขึ้น preview กดเล่นได้
+          if (it.video) mediaMsgs.push({ type: "text", text: it.video });
         }
       }
       return ""; // ลบโค้ดออก ลูกค้าจะไม่เห็น
@@ -116,7 +121,7 @@ function buildMessages(reply) {
 
   const messages = [];
   if (text) messages.push({ type: "text", text });
-  messages.push(...imageMsgs);
+  messages.push(...mediaMsgs);
   return {
     messages: messages.length ? messages : [{ type: "text", text: String(reply) }],
     text,
