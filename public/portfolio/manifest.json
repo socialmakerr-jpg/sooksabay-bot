@@ -1,0 +1,18 @@
+{
+  "car": {
+    "label": "รถยนต์",
+    "items": []
+  },
+  "accessory": {
+    "label": "ประดับยนต์",
+    "items": []
+  },
+  "realestate": {
+    "label": "อสังหาริมทรัพย์",
+    "items": []
+  },
+  "general": {
+    "label": "ผลงานทั่วไป",
+    "items": []
+  }
+}
