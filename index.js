@@ -107,7 +107,8 @@ app.post("/reply", async (req, res) => {
 
   const content = { messages: built.messages };
   if (phone) content.actions = [{ action: "add_tag", tag_name: "ได้เบอร์แล้ว" }];
-  res.json({ version: "v2", content });
+  // version/content = ManyChat อ่าน | reply = UChat/SendPulse เอาไป map เป็นข้อความง่าย ๆ
+  res.json({ version: "v2", reply: built.text || stripMarkers(reply), content });
 });
 
 // ============================================================
