@@ -81,6 +81,32 @@ async function generateReply(userId, text) {
   return reply; // ยังมีโค้ด [[PORTFOLIO:..]] อยู่ ให้ตัวสร้างข้อความของแต่ละช่องทางจัดการ
 }
 
+// ให้ Claude คิด "ประโยคทักกลับ" เองตามบริบท (ตอนลูกค้าเงียบ)
+async function generateFollowup(userId) {
+  const history = conversations.get(userId) || [];
+  const nudge = {
+    role: "user",
+    content:
+      "(ข้อความระบบภายใน ไม่ใช่จากลูกค้า: ลูกค้าเงียบหายไปพักหนึ่งแล้ว ช่วยทักกลับไปหาลูกค้าสั้น ๆ สุภาพ 1-2 ประโยคตามบริบทที่คุยกันมา เพื่อชวนคุยต่อและขอเบอร์อย่างสุภาพ ห้ามทักซ้ำซาก/ใช้ประโยคเดิม)",
+  };
+  let reply = "ลูกค้าคะ 🙏 รบกวนขอเบอร์ติดต่อกลับได้ไหมคะ เดี๋ยวทีมงานโทรไปให้ข้อมูลและเล่ารายละเอียดให้ฟังค่ะ";
+  try {
+    const resp = await anthropic.messages.create({
+      model: ANTHROPIC_MODEL,
+      max_tokens: 500,
+      system: SYSTEM_PROMPT + portfolioInstructions(),
+      messages: [...history, nudge],
+    });
+    reply =
+      resp.content.filter((b) => b.type === "text").map((b) => b.text).join("").trim() || reply;
+  } catch (e) {
+    console.error("Followup error:", e.message);
+  }
+  history.push({ role: "assistant", content: stripMarkers(reply) });
+  conversations.set(userId, history.slice(-HISTORY_LIMIT));
+  return reply;
+}
+
 // ============================================================
 //  ช่องทาง 1: ManyChat / UChat / SendPulse  (POST /reply)
 // ============================================================
@@ -94,6 +120,13 @@ app.post("/reply", async (req, res) => {
   const userId = String(req.body.user_id || "anon");
   const text = String(req.body.text || "").trim();
   if (!text) return res.json(mcReply("สวัสดีค่ะ 🙏 มีอะไรให้ช่วยไหมคะ"));
+
+  // โหมด follow-up: ลูกค้าเงียบไป -> ให้ Claude คิดประโยคทักกลับเองตามบริบท
+  if (text === "__FOLLOWUP__") {
+    const fr = await generateFollowup(userId);
+    const fb = buildMessages(fr);
+    return res.json({ version: "v2", reply: fb.text || stripMarkers(fr), content: { messages: fb.messages } });
+  }
 
   const reply = await generateReply(userId, text);
   const built = buildMessages(reply);
