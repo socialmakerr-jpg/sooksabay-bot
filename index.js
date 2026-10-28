@@ -54,26 +54,48 @@ app.get("/leads", (_req, res) => res.json({ count: leads.length, leads }));
 // ============================================================
 //  สมองกลาง: ให้ Claude คิดคำตอบ (ใช้ร่วมกันทุกช่องทาง)
 // ============================================================
+// เรียก Claude พร้อม "ลองใหม่อัตโนมัติ" ถ้าสะดุด (กันลูกค้าเจอข้อความ error)
+// - ลองสูงสุด 2 ครั้ง, แต่ละครั้งรอไม่เกิน 9 วิ (กันค้างจน UChat หมดเวลา ~14 วิ)
+async function callClaudeText(messages) {
+  let lastErr;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const resp = await anthropic.messages.create(
+        {
+          model: ANTHROPIC_MODEL,
+          max_tokens: 500,
+          system: SYSTEM_PROMPT + portfolioInstructions(),
+          messages,
+        },
+        { timeout: 9000, maxRetries: 0 }
+      );
+      const text = resp.content
+        .filter((b) => b.type === "text")
+        .map((b) => b.text)
+        .join("")
+        .trim();
+      if (text) return text;
+      lastErr = new Error("empty reply");
+    } catch (e) {
+      lastErr = e;
+      console.error(`Claude error (ครั้งที่ ${attempt}):`, e.message);
+    }
+    if (attempt < 2) await new Promise((r) => setTimeout(r, 300));
+  }
+  throw lastErr;
+}
+
 async function generateReply(userId, text) {
   const history = conversations.get(userId) || [];
   history.push({ role: "user", content: text });
 
-  let reply = "ขอโทษค่ะ ระบบขัดข้องนิดนึง เดี๋ยวทีมงานติดต่อกลับนะคะ 🙏";
+  // ถ้าสะดุดจริง ๆ ให้พูดแบบธรรมชาติชวนคุยต่อ — ห้ามบอกลูกค้าว่า "ระบบขัดข้อง" เด็ดขาด
+  let reply =
+    "สวัสดีค่ะลูกค้า 😊 ขอบคุณที่ทักเข้ามานะคะ รบกวนเล่าให้ฟังหน่อยได้ไหมคะว่าลูกค้าสนใจเรื่องไหน เดี๋ยวช่วยดูให้ค่ะ";
   try {
-    const resp = await anthropic.messages.create({
-      model: ANTHROPIC_MODEL,
-      max_tokens: 500,
-      system: SYSTEM_PROMPT + portfolioInstructions(),
-      messages: history,
-    });
-    reply =
-      resp.content
-        .filter((b) => b.type === "text")
-        .map((b) => b.text)
-        .join("")
-        .trim() || reply;
+    reply = await callClaudeText(history);
   } catch (e) {
-    console.error("Claude error:", e.message);
+    console.error("Claude error (ใช้ข้อความสำรองแบบเนียน):", e.message);
   }
 
   history.push({ role: "assistant", content: stripMarkers(reply) });
@@ -91,16 +113,9 @@ async function generateFollowup(userId) {
   };
   let reply = "ลูกค้าคะ 🙏 รบกวนขอเบอร์ติดต่อกลับได้ไหมคะ เดี๋ยวทีมงานโทรไปให้ข้อมูลและเล่ารายละเอียดให้ฟังค่ะ";
   try {
-    const resp = await anthropic.messages.create({
-      model: ANTHROPIC_MODEL,
-      max_tokens: 500,
-      system: SYSTEM_PROMPT + portfolioInstructions(),
-      messages: [...history, nudge],
-    });
-    reply =
-      resp.content.filter((b) => b.type === "text").map((b) => b.text).join("").trim() || reply;
+    reply = await callClaudeText([...history, nudge]);
   } catch (e) {
-    console.error("Followup error:", e.message);
+    console.error("Followup error (ใช้ข้อความสำรอง):", e.message);
   }
   history.push({ role: "assistant", content: stripMarkers(reply) });
   conversations.set(userId, history.slice(-HISTORY_LIMIT));
