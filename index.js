@@ -21,6 +21,11 @@ const {
   PUBLIC_BASE_URL = "https://sooksabay-bot.onrender.com", // ใช้ทำลิงก์รูปผลงาน
   LINE_CHANNEL_ACCESS_TOKEN = "",       // จาก LINE Developers (Messaging API)
   LINE_CHANNEL_SECRET = "",             // จาก LINE Developers (ใช้ตรวจลายเซ็น)
+  // ---- Facebook Messenger (ต่อตรง ไม่ผ่าน UChat) ----
+  FB_PAGE_ACCESS_TOKEN = "",            // Page access token ของเพจ (ใช้ส่งข้อความ)
+  FB_VERIFY_TOKEN = "sooksabay_verify", // ใช้ยืนยันตอนตั้ง webhook ในหน้า Developer
+  FB_APP_SECRET = "",                   // App Secret (ตรวจลายเซ็น X-Hub-Signature-256)
+  FB_API_VERSION = "v21.0",             // เวอร์ชัน Graph API
 } = process.env;
 
 const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
@@ -48,7 +53,7 @@ function loadPortfolio() {
 loadPortfolio();
 
 // health check + ดูรายชื่อ lead
-app.get("/", (_req, res) => res.send("Claude brain พร้อมทำงาน ✓ (ManyChat + LINE)"));
+app.get("/", (_req, res) => res.send("Claude brain พร้อมทำงาน ✓ (ManyChat + LINE + Facebook)"));
 app.get("/leads", (_req, res) => res.json({ count: leads.length, leads }));
 
 // ============================================================
@@ -227,6 +232,173 @@ async function lineReply(replyToken, messages) {
 }
 
 // ============================================================
+//  ช่องทาง 3: Facebook Messenger  (GET/POST /fb/webhook)  — ต่อตรง ไม่ผ่าน UChat
+// ============================================================
+
+// 3.1 ยืนยัน webhook ตอนตั้งค่าในหน้า Facebook Developer
+app.get("/fb/webhook", (req, res) => {
+  const mode = req.query["hub.mode"];
+  const token = req.query["hub.verify_token"];
+  const challenge = req.query["hub.challenge"];
+  if (mode === "subscribe" && token === FB_VERIFY_TOKEN) {
+    console.log("✅ FB webhook verified");
+    return res.status(200).send(challenge);
+  }
+  console.log("⚠️ FB webhook verify ไม่ผ่าน (verify token ไม่ตรง)");
+  return res.sendStatus(403);
+});
+
+// 3.2 รับข้อความ/ปุ่มกด จากลูกค้า
+app.post("/fb/webhook", (req, res) => {
+  // ตรวจลายเซ็นจาก Facebook (กันคนปลอมยิงเข้ามา) — ต้องตั้ง FB_APP_SECRET ก่อน
+  if (FB_APP_SECRET) {
+    const sig = req.headers["x-hub-signature-256"] || "";
+    const expected =
+      "sha256=" +
+      crypto.createHmac("sha256", FB_APP_SECRET).update(req.rawBody || Buffer.from("")).digest("hex");
+    if (!safeEqual(sig, expected)) {
+      console.log("⚠️ FB signature ไม่ตรง — ปฏิเสธ");
+      return res.sendStatus(401);
+    }
+  }
+  res.sendStatus(200); // ตอบ Facebook ทันที แล้วค่อยคิดคำตอบเบื้องหลัง (ไม่มี timeout 14 วิแล้ว)
+
+  if (req.body.object !== "page") return;
+  for (const entry of req.body.entry || []) {
+    for (const ev of entry.messaging || []) {
+      handleFacebook(ev).catch((e) => console.error("FB handle error:", e.message));
+    }
+  }
+});
+
+async function handleFacebook(ev) {
+  const senderId = ev.sender?.id;
+  if (!senderId) return;
+  // ข้าม echo (ข้อความที่เพจส่งเอง), delivery/read receipts
+  if (ev.message?.is_echo || ev.delivery || ev.read) return;
+
+  let text = "";
+  if (ev.message?.text) text = String(ev.message.text).trim();
+  else if (ev.postback) text = String(ev.postback.payload || ev.postback.title || "").trim(); // ลูกค้ากดปุ่มจากแอด
+  const userId = "fb:" + senderId;
+  if (!text) text = "(ลูกค้าส่งรูป/สติกเกอร์เข้ามาโดยไม่มีข้อความ)";
+  console.log("📘 FB | msg:", text.slice(0, 80));
+
+  clearFollowup(userId);                 // ลูกค้าตอบแล้ว ยกเลิกตัวทักกลับเดิม
+  fbSenderAction(senderId, "mark_seen"); // อ่านแล้ว + กำลังพิมพ์ (ดูเป็นคนจริง)
+  fbSenderAction(senderId, "typing_on");
+
+  const reply = await generateReply(userId, text);
+
+  const phone = extractPhone(text);
+  if (phone) {
+    console.log("📞 FB เจอเบอร์:", phone);
+    if (!leads.find((l) => l.userId === userId && l.phone === phone))
+      leads.push({ channel: "facebook", userId, phone, time: new Date().toISOString() });
+  }
+
+  const messages = buildFbMessages(reply);
+  for (const m of messages) await fbSend(senderId, m);
+
+  // ยังไม่ได้เบอร์ -> ตั้งเวลา 5 นาที ถ้าลูกค้าเงียบ บอทจะทักกลับเอง (เซิร์ฟเวอร์จับเวลาเอง)
+  if (!phone) scheduleFollowup(userId, senderId);
+}
+
+// ส่งข้อความผ่าน Messenger Send API (ใช้ Page access token)
+async function fbSend(recipientId, message) {
+  if (!FB_PAGE_ACCESS_TOKEN) {
+    console.log("! ยังไม่ได้ตั้ง FB_PAGE_ACCESS_TOKEN — ข้ามการส่ง (รอเสียบ token)");
+    return;
+  }
+  try {
+    const r = await fetch(`https://graph.facebook.com/${FB_API_VERSION}/me/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${FB_PAGE_ACCESS_TOKEN}` },
+      body: JSON.stringify({ recipient: { id: recipientId }, messaging_type: "RESPONSE", message }),
+    });
+    if (!r.ok) {
+      const t = await r.text();
+      console.error("FB send error:", r.status, t.slice(0, 300));
+    }
+  } catch (e) {
+    console.error("fbSend error:", e.message);
+  }
+}
+
+// แสดง "อ่านแล้ว" / "กำลังพิมพ์" (ไม่สำคัญถ้าพลาดก็ข้าม)
+async function fbSenderAction(recipientId, action) {
+  if (!FB_PAGE_ACCESS_TOKEN) return;
+  try {
+    await fetch(`https://graph.facebook.com/${FB_API_VERSION}/me/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${FB_PAGE_ACCESS_TOKEN}` },
+      body: JSON.stringify({ recipient: { id: recipientId }, sender_action: action }),
+    });
+  } catch {}
+}
+
+// ---- สร้างข้อความสำหรับ Facebook Messenger (ข้อความ + รูปผลงาน) ----
+function buildFbMessages(reply) {
+  const media = [];
+  const sent = new Set();
+  const text = String(reply)
+    .replace(/\[\[PORTFOLIO:([a-zA-Z0-9_-]+)\]\]/g, (_m, cat) => {
+      const c = PORTFOLIO[cat];
+      if (c && Array.isArray(c.items) && c.items.length && !sent.has(cat)) {
+        sent.add(cat);
+        for (const it of c.items) {
+          if (it.caption) media.push({ text: it.caption });
+          if (it.url) {
+            const url = /^https?:\/\//.test(it.url) ? it.url : PUBLIC_BASE_URL + it.url;
+            media.push({ attachment: { type: "image", payload: { url, is_reusable: true } } });
+          }
+          if (it.video) media.push({ text: it.video });
+        }
+      }
+      return "";
+    })
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  const messages = [];
+  if (text) messages.push({ text });
+  messages.push(...media);
+  return messages.length ? messages : [{ text: String(reply) }];
+}
+
+// ---- ตัวจับเวลา "ทักกลับเมื่อลูกค้าเงียบ 5 นาที" (เซิร์ฟเวอร์ทำเอง ไม่พึ่ง UChat) ----
+const followupTimers = new Map();
+const FOLLOWUP_DELAY_MS = 5 * 60 * 1000;
+function clearFollowup(userId) {
+  const t = followupTimers.get(userId);
+  if (t) { clearTimeout(t); followupTimers.delete(userId); }
+}
+function scheduleFollowup(userId, senderId) {
+  clearFollowup(userId);
+  const t = setTimeout(async () => {
+    followupTimers.delete(userId);
+    try {
+      const reply = await generateFollowup(userId);
+      const messages = buildFbMessages(reply);
+      for (const m of messages) await fbSend(senderId, m);
+      console.log("⏰ FB followup ส่งแล้ว:", userId);
+    } catch (e) {
+      console.error("FB followup error:", e.message);
+    }
+  }, FOLLOWUP_DELAY_MS);
+  if (t.unref) t.unref();
+  followupTimers.set(userId, t);
+}
+
+// เทียบสตริงแบบกันจับเวลา (ใช้ตรวจลายเซ็น)
+function safeEqual(a, b) {
+  const ba = Buffer.from(String(a));
+  const bb = Buffer.from(String(b));
+  if (ba.length !== bb.length) return false;
+  return crypto.timingSafeEqual(ba, bb);
+}
+
+// ============================================================
 //  ตัวช่วย
 // ============================================================
 
@@ -332,5 +504,10 @@ function mcReply(text, actions) {
 }
 
 app.listen(PORT, () =>
-  console.log("🧠 Claude brain ทำงานที่ port", PORT, "| model:", ANTHROPIC_MODEL, "| LINE:", LINE_CHANNEL_ACCESS_TOKEN ? "พร้อม" : "รอ token")
+  console.log(
+    "🧠 Claude brain ทำงานที่ port", PORT,
+    "| model:", ANTHROPIC_MODEL,
+    "| LINE:", LINE_CHANNEL_ACCESS_TOKEN ? "พร้อม" : "รอ token",
+    "| Facebook:", FB_PAGE_ACCESS_TOKEN ? "พร้อม" : "รอ token"
+  )
 );
